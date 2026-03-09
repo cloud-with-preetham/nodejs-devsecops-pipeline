@@ -201,20 +201,35 @@ jobs:
         run: |
           set +e
 
+          IMAGE="${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest"
           sbom_exit=0
 
-          docker pull ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
-          pull_exit=$?
-
-          if [ $pull_exit -ne 0 ]; then
-            sbom_exit=$pull_exit
+          # Fast path: use the local image already built on this runner.
+          if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "Using local image for SBOM generation: $IMAGE"
           else
-            docker run --rm \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              anchore/syft:latest \
-              ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest \
-              -o spdx-json > sbom.spdx.json
-            sbom_exit=$?
+            echo "Local image not found, pulling from DockerHub: $IMAGE"
+            docker pull "$IMAGE"
+            pull_exit=$?
+            if [ $pull_exit -ne 0 ]; then
+              sbom_exit=$pull_exit
+            fi
+          fi
+
+          if [ $sbom_exit -eq 0 ]; then
+            # If syft is installed on runner, use it directly (faster than dockerized syft).
+            if command -v syft >/dev/null 2>&1; then
+              syft "$IMAGE" --scope squashed -o spdx-json > sbom.spdx.json
+              sbom_exit=$?
+            else
+              docker run --rm \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                anchore/syft:latest \
+                "$IMAGE" \
+                --scope squashed \
+                -o spdx-json > sbom.spdx.json
+              sbom_exit=$?
+            fi
           fi
 
           if [ ! -s sbom.spdx.json ]; then
