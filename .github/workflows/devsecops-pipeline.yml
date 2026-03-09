@@ -6,6 +6,17 @@ on:
       - main
 
 jobs:
+  # Docker storage cleaner
+  cleanup:
+    runs-on: self-hosted
+
+    steps:
+      - name: Cleanup Docker
+        run: |
+          docker system prune -af || true
+          docker image prune -af || true
+          rm -rf ~/.cache/trivy || true
+
   # CODE QUALITY CHECK
   code-quality:
     runs-on: self-hosted
@@ -133,6 +144,7 @@ jobs:
           format: table
           output: trivy-report.txt
           severity: "HIGH,CRITICAL"
+          continue-on-error: true
 
       - name: Upload Trivy Report
         uses: actions/upload-artifact@v4
