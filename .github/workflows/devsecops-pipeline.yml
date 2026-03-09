@@ -36,8 +36,8 @@ jobs:
           name: semgrep-report
           path: semgrep-report.json
 
-  # SECRECTS SCAN
-  secrects-scan:
+  # SECRETS SCAN
+  secrets-scan:
     runs-on: self-hosted
     steps:
       - name: Checkout Code
@@ -81,10 +81,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: npm install
 
-      - name: Run Tests
+      - name: Run tests
         run: npm test
 
   # BUILD & PUSH
