@@ -31,12 +31,12 @@ jobs:
           docker run --rm -v "$PWD:/src" returntocorp/semgrep semgrep scan --config auto --json > semgrep-report.json
 
       - name: Upload SAST Report
-        uses: actions/upload-artifacts@v4
+        uses: actions/upload-artifact@4
         with:
           name: semgrep-report
           path: semgrep-report.json
 
-  # SECRETS SCAN
+  # SECRETS SCANS
   secrets-scan:
     runs-on: self-hosted
     steps:
@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run tufflehogging
-        uses: tufflesecurity/tufflehog@main
+        uses: trufflesecurity/trufflehog@main
 
   # DEPENDENCY SCAN
   dependency-check:
