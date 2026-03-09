@@ -1,0 +1,30 @@
+name: Node CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build docker image
+        run: docker build -t nodejs-devsecops .
+
+      - name: Stop existing container
+        run: dockker stop node-app || true
+
+      - name: Remove old container
+        run: docker rm node-app ||true
+
+      - name: Run container
+        run: docker run -d  -p 3000:3000 --name node-app nodejs-devsecops
