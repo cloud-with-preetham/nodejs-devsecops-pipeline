@@ -1,6 +1,8 @@
+---
 name: DevSecOps Pipeline
 
-on:
+'on':
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -20,12 +22,19 @@ jobs:
   # CODE QUALITY CHECK
   code-quality:
     runs-on: self-hosted
+    needs: cleanup
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run ESlint
         run: npm run lint
@@ -33,13 +42,21 @@ jobs:
   # SAST SCAN
   sast-scan:
     runs-on: self-hosted
+    needs: cleanup
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Run Semgrep
         run: |
-          docker run --rm -v "$PWD:/src" returntocorp/semgrep semgrep scan --config auto --json > semgrep-report.json
+          docker run --rm \
+            -v "$PWD:/src" \
+            returntocorp/semgrep:latest \
+            semgrep scan \
+            --config auto \
+            /src \
+            --json \
+            --output /src/semgrep-report.json
 
       - name: Upload SAST Report
         uses: actions/upload-artifact@v4
@@ -49,7 +66,8 @@ jobs:
 
   # SECRETS SCANS
   secrets-scan:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    needs: cleanup
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -65,9 +83,19 @@ jobs:
   # DEPENDENCY SCAN
   dependency-check:
     runs-on: self-hosted
+    needs: cleanup
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Run npm audit
         run: npm audit --json > dependency-report.json || true
@@ -81,6 +109,7 @@ jobs:
   # DOCKERFILE SCAN
   dockerfile-scan:
     runs-on: self-hosted
+    needs: cleanup
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -93,12 +122,19 @@ jobs:
   # TESTS
   tests:
     runs-on: self-hosted
+    needs: cleanup
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
@@ -107,39 +143,58 @@ jobs:
   build:
     runs-on: self-hosted
     needs:
-      [
-        code-quality,
-        sast-scan,
-        secrets-scan,
-        dependency-check,
-        dockerfile-scan,
-        tests,
-      ]
+      - code-quality
+      - sast-scan
+      - secrets-scan
+      - dependency-check
+      - dockerfile-scan
+      - tests
+    env:
+      IMAGE_NAME: ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Validate DockerHub Configuration
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+        run: |
+          if [ -z "$DOCKER_USERNAME" ]; then
+            echo "Repository variable DOCKER_USERNAME is not set."
+            exit 1
+          fi
+          if [ -z "$DOCKER_TOKEN" ]; then
+            echo "Repository secret DOCKER_TOKEN is not set."
+            exit 1
+          fi
+
       - name: Login to DockerHub
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Build Docker Image
-        run: docker build -t ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest .
+        run: docker build -t "$IMAGE_NAME" .
 
       - name: Push Docker Image
-        run: docker push ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
+        run: docker push "$IMAGE_NAME"
 
   # IMAGE SCAN
   image-scan:
     runs-on: self-hosted
     needs: build
+    env:
+      IMAGE_NAME: ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Try DockerHub Login (non-blocking)
         continue-on-error: true
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
@@ -150,12 +205,14 @@ jobs:
 
           trivy_exit=0
 
-          docker pull ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
+          docker pull "$IMAGE_NAME"
           pull_exit=$?
 
           if [ $pull_exit -ne 0 ]; then
             trivy_exit=$pull_exit
-            echo "Failed to pull image for Trivy scan. Check DockerHub credentials/image visibility." > trivy-report.txt
+            echo "Failed to pull image for Trivy scan." > trivy-report.txt
+            echo "Check DockerHub credentials or image visibility." \
+              >> trivy-report.txt
           else
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
@@ -165,12 +222,14 @@ jobs:
               --severity HIGH,CRITICAL \
               --format table \
               --output /work/trivy-report.txt \
-              ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
+              "$IMAGE_NAME"
             trivy_exit=$?
           fi
 
           if [ ! -s trivy-report.txt ]; then
-            echo "Trivy report was not generated. Check the 'Generate Trivy Report' logs for the root cause." > trivy-report.txt
+            echo "Trivy report was not generated." > trivy-report.txt
+            echo "Check Generate Trivy Report logs for root cause." \
+              >> trivy-report.txt
           fi
 
           echo "TRIVY_EXIT_CODE=$trivy_exit" >> "$GITHUB_ENV"
@@ -189,10 +248,15 @@ jobs:
   sbom:
     runs-on: self-hosted
     needs: image-scan
+    env:
+      IMAGE_NAME: ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Try DockerHub Login (non-blocking)
         continue-on-error: true
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
@@ -201,7 +265,7 @@ jobs:
         run: |
           set +e
 
-          IMAGE="${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest"
+          IMAGE="$IMAGE_NAME"
           sbom_exit=0
 
           # Fast path: use the local image already built on this runner.
@@ -217,7 +281,8 @@ jobs:
           fi
 
           if [ $sbom_exit -eq 0 ]; then
-            # If syft is installed on runner, use it directly (faster than dockerized syft).
+            # If syft is installed on runner, use it directly.
+            # This is typically faster than dockerized syft.
             if command -v syft >/dev/null 2>&1; then
               syft "$IMAGE" --scope squashed -o spdx-json > sbom.spdx.json
               sbom_exit=$?
@@ -233,7 +298,8 @@ jobs:
           fi
 
           if [ ! -s sbom.spdx.json ]; then
-            echo '{"status":"SBOM generation failed","message":"Check Generate SBOM logs for details."}' > sbom.spdx.json
+            echo '{"status":"SBOM generation failed","message":"Check logs."}' \
+              > sbom.spdx.json
           fi
 
           echo "SBOM_EXIT_CODE=$sbom_exit" >> "$GITHUB_ENV"
@@ -252,9 +318,17 @@ jobs:
   deploy:
     runs-on: self-hosted
     needs: sbom
+    env:
+      IMAGE_NAME: ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
     steps:
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
       - name: Pull Latest Image
-        run: docker pull ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
+        run: docker pull "$IMAGE_NAME"
 
       - name: Stop Existing Container
         run: docker stop node-app || true
@@ -263,4 +337,4 @@ jobs:
         run: docker rm node-app || true
 
       - name: Run Container
-        run: docker run -d -p 3000:3000 --name node-app ${{ vars.DOCKER_USERNAME }}/nodejs-devsecops:latest
+        run: docker run -d -p 3000:3000 --name node-app "$IMAGE_NAME"
